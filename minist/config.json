@@ -20,8 +20,7 @@
         "type": "Adam",
         "args":{
             "lr": 0.001,
-            "weight_decay": 0,
-            "amsgrad": true
+            "weight_decay": 1e-3
         }
     },
     "loss": "nll_loss",
@@ -42,8 +41,8 @@
         "save_period": 1,
         "verbosity": 2,
         
-        "monitor": "min val_loss",
-        "early_stop": 10,
+        "monitor": "min valid/loss",
+        "early_stop": 100,
 
         "wandb": true
     },

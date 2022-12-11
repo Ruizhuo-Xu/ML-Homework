@@ -12,7 +12,8 @@ class BaseTrainer:
     Base class for all trainers
     """
     def __init__(self, model, criterion, metric_ftns,
-                 optimizer, config, data_loader, valid_data_loader, len_epoch):
+                 optimizer, config, data_loader, valid_data_loader=None,
+                 len_epoch=None, lr_scheduler=None):
         self.config = config
         self.logger = config.get_logger('trainer', config['trainer']['verbosity'])
 
@@ -53,19 +54,21 @@ class BaseTrainer:
                 self.early_stop = inf
 
         self.start_epoch = 1
+        self.epoch = self.start_epoch
+        self.not_improved_count = 0  # 用于统计监控指标没有改善的次数
 
         self.checkpoint_dir = config.save_dir
 
         # setup visualization writer instance                
         # self.writer = TensorboardWriter(config.log_dir, self.logger, cfg_trainer['tensorboard'])
-        self.writer = WandbWriter(config, self.logger, cfg_trainer['wandb'])
-        self.steps = 0
+        self.progress_bar = tqdm(desc="Progress", total=self.len_epoch, leave=False)
+        self.writer = WandbWriter(config, self.logger, cfg_trainer['wandb'], self.progress_bar)
 
         if config.resume is not None:
             self._resume_checkpoint(config.resume)
 
     @abstractmethod
-    def _train_epoch(self, batch_idx, batch):
+    def _training_step(self, batch, batch_idx):
         """
         Training logic for an epoch
 
@@ -74,7 +77,7 @@ class BaseTrainer:
         raise NotImplementedError
 
     @abstractmethod
-    def _valid_epoch(self, batch_idx, batch):
+    def _validation_step(self, batch, batch_idx):
         """
         Training logic for an epoch
 
@@ -82,78 +85,102 @@ class BaseTrainer:
         """
         raise NotImplementedError
 
+    def _training_epoch(self):
+        self.model.train()
+        for batch_idx, batch in enumerate(self.data_loader, 1):
+            self.progress_bar.set_description(
+                desc=f"Epoch:{self.epoch}/{self.epochs} Training:{batch_idx}/{len(self.data_loader)}")
+            is_end = (batch_idx == len(self.data_loader))
+            self.writer.set_step(mode="training", end=is_end)
+            self.optimizer.zero_grad()
+            log = self._training_step(batch, batch_idx)
+            if isinstance(log, dict):
+                assert "loss" in log.keys(), "return dict must contain 'loss'"
+                loss = log["loss"]
+            else:
+                loss = log
+            loss.backward()  # 梯度回传
+            self.optimizer.step()  # 模型优化
+            self.progress_bar.update()  # 更新进度条
+            self.writer.end_step()
+        return log
+    
+    def _validation_epoch(self):
+        self.model.eval()
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(self.valid_data_loader, 1):
+                self.progress_bar.set_description_str(
+                    desc=f"Epoch:{self.epoch}/{self.epochs} Validation:{batch_idx}/{len(self.valid_data_loader)}")
+                is_end = (batch_idx == len(self.valid_data_loader))
+                self.writer.set_step(mode="validation", end=is_end)
+                log = self._validation_step(batch, batch_idx)
+                if isinstance(log, dict):
+                    # assert "loss" in log.keys(), "return dict must contain 'loss'"
+                    loss = log["loss"]
+                else:
+                    loss = log
+                self.progress_bar.update()  # 更新进度条
+                self.writer.end_step()
+        return log
+
+    def _set_epoch(self, epoch):
+        self.epoch = epoch
+        self.writer.mode = 'global'
+        self.writer.log('epoch', self.epoch, on_pbar=False)
+
     def train(self):
         """
         Full training logic
         """
-        not_improved_count = 0
         for epoch in range(self.start_epoch, self.epochs + 1):
-            # self.writer.mode = 'global'
-            # self.writer.log('Epoch', epoch)
-            with tqdm(total=self.len_epoch, desc="Progress:", leave=False) as pbar:
-                self.model.train()
-                for batch_idx, batch in enumerate(self.data_loader):
-                    self.writer.set_step()
-                    self.optimizer.zero_grad()
-                    train_result = self._train_epoch(batch_idx, batch)
-                    if isinstance(train_result, dict):
-                        assert "loss" in train_result.keys(), "return dict must contain 'loss'"
-                        loss = train_result["loss"]
-                    else:
-                        loss = train_result
-                    loss.backward()
-                    self.optimizer.step()
-                    self.steps += 1
-                    pbar.update()
-
-                self.model.eval()
-                with torch.no_grad():
-                    for batch_idx, batch in enumerate(self.valid_data_loader):
-                        self.writer.set_step()
-                        valid_result = self._valid_epoch(batch_idx, batch)
-                        self.steps += 1
-                        pbar.update()
-                        
+            # self.epoch = epoch
+            self._set_epoch(epoch)
+            log = {'epoch': epoch}
+            self.writer.empty_metrics()
+            train_log = self._training_epoch()
+            valid_log = self._validation_epoch()
+            metrics = self.writer.summary_metrics()
+            log.update(metrics)
+            # print logged informations to the file
+            for key, value in log.items():
+                self.logger.info('    {:15s}: {}'.format(str(key), value))
+            if self.early_stopping(log):
+                """根据监控指标判断是否early stopping"""
+                break
+            self.progress_bar.reset()
+        self.progress_bar.close()
                     
-                    
-                    
-            # result = self._train_epoch(epoch)
+    def early_stopping(self, log):
+        # evaluate model performance according to configured metric, save best checkpoint as model_best
+        best = False
+        if self.mnt_mode != 'off':
+            try:
+                # check whether model performance improved or not, according to specified metric(mnt_metric)
+                improved = (self.mnt_mode == 'min' and log[self.mnt_metric] <= self.mnt_best) or \
+                            (self.mnt_mode == 'max' and log[self.mnt_metric] >= self.mnt_best)
+            except KeyError:
+                self.logger.warning("Warning: Metric '{}' is not found. "
+                                    "Model performance monitoring is disabled.".format(self.mnt_metric))
+                self.mnt_mode = 'off'
+                improved = False
 
-            # save logged informations into log dict
-            # log = {'epoch': epoch}
-            # log.update(result)
+            if improved:
+                self.mnt_best = log[self.mnt_metric]
+                self.not_improved_count = 0
+                best = True
+            else:
+                self.not_improved_count += 1
 
-            # print logged informations to the screen
-            # for key, value in log.items():
-            #     self.logger.info('    {:15s}: {}'.format(str(key), value))
+            if self.not_improved_count > self.early_stop:
+                self.logger.warning("Validation performance didn\'t improve for {} epochs. "
+                                    "Training stops.".format(self.early_stop))
+                return True
 
-            # evaluate model performance according to configured metric, save best checkpoint as model_best
-            # best = False
-            # if self.mnt_mode != 'off':
-            #     try:
-            #         # check whether model performance improved or not, according to specified metric(mnt_metric)
-            #         improved = (self.mnt_mode == 'min' and log[self.mnt_metric] <= self.mnt_best) or \
-            #                    (self.mnt_mode == 'max' and log[self.mnt_metric] >= self.mnt_best)
-            #     except KeyError:
-            #         self.logger.warning("Warning: Metric '{}' is not found. "
-            #                             "Model performance monitoring is disabled.".format(self.mnt_metric))
-            #         self.mnt_mode = 'off'
-            #         improved = False
+        if self.epoch % self.save_period == 0:
+            self._save_checkpoint(self.epoch, save_best=best)
 
-            #     if improved:
-            #         self.mnt_best = log[self.mnt_metric]
-            #         not_improved_count = 0
-            #         best = True
-            #     else:
-            #         not_improved_count += 1
+        return False
 
-            #     if not_improved_count > self.early_stop:
-            #         self.logger.info("Validation performance didn\'t improve for {} epochs. "
-            #                          "Training stops.".format(self.early_stop))
-            #         break
-
-            # if epoch % self.save_period == 0:
-            #     self._save_checkpoint(epoch, save_best=best)
 
     def _save_checkpoint(self, epoch, save_best=False):
         """
@@ -177,12 +204,14 @@ class BaseTrainer:
             """remove the old checkpoint"""
             if "checkpoint" in file:
                 os.remove(self.checkpoint_dir/file)
+            if save_best and "best" in file:
+                os.remove(self.checkpoint_dir/file)
 
         filename = str(self.checkpoint_dir / 'checkpoint-epoch{}.pth'.format(epoch))
         torch.save(state, filename)
         self.logger.info("Saving checkpoint: {} ...".format(filename))
         if save_best:
-            best_path = str(self.checkpoint_dir / 'model_best.pth')
+            best_path = str(self.checkpoint_dir / f'best_model_epoch{epoch}.pth')
             torch.save(state, best_path)
             self.logger.info("Saving current best: model_best.pth ...")
 

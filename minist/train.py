@@ -53,7 +53,7 @@ def main(config):
                       lr_scheduler=lr_scheduler)
 
     trainer.train()
-    trainer.over()
+    # trainer.over()
 
 
 if __name__ == '__main__':
