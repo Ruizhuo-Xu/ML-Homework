@@ -29,10 +29,10 @@ class MnistModel(BaseModel):
             nn.Flatten(),
             nn.Linear(784, 1024),
             nn.ReLU(),
-            nn.Dropout(p=0.1),
+            # nn.Dropout(p=0.1),
             nn.Linear(1024, 512),
             nn.ReLU(),
-            nn.Dropout(p=0.1),
+            # nn.Dropout(p=0.1),
             nn.Linear(512, num_classes),
         )
 

@@ -153,6 +153,7 @@ class BaseTrainer:
                 break
             self.progress_bar.reset()
         self.progress_bar.close()
+        return metrics
                     
     def early_stopping(self, log):
         # evaluate model performance according to configured metric, save best checkpoint as model_best

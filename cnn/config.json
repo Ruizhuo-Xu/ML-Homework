@@ -13,13 +13,14 @@
             "batch_size": 128,
             "shuffle": true,
             "validation_split": 0.1,
-            "num_workers": 2
+            "num_workers": 2,
+            "k_folders": 1
         }
     },
     "optimizer": {
         "type": "SGD",
         "args":{
-            "lr": 0.1,
+            "lr": 0.05,
             "weight_decay": 1e-3
         }
     },
@@ -28,10 +29,10 @@
         "accuracy", "top_k_acc"
     ],
     "lr_scheduler": {
-        "type": "StepLR",
+        "type": "MultiStepLR",
         "args": {
-            "step_size": 50,
-            "gamma": 0.1
+            "step_size": [30, 70],
+            "gamma": [0.2, 0.1] 
         }
     },
     "trainer": {
@@ -48,7 +49,7 @@
     },
     "wandb": {
         "project": "ML_Mnist",
-        "name": "sgd-0.1-steplr-nodrop",
+        "name": "sgd-0.05-steplr-64d-drop",
         "notes": "try",
         "tags": ["baseline", "try"],
         "entity": "ruizhuo_xu"

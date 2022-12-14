@@ -6,10 +6,13 @@ import data_loader.data_loaders as module_data
 import model.loss as module_loss
 import model.metric as module_metric
 import model.model as module_arch
+import model.LRscheduler as module_lr_scheduler
 from parse_config import ConfigParser
 from trainer import Trainer
 from utils import prepare_device
 import os
+import pdb
+from tqdm import trange
 
 os.environ["WANDB_MODE"] = "offline"
 
@@ -21,13 +24,13 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 np.random.seed(SEED)
 
-def main(config):
+def main(config, logger, k_folder=0):
     # get logger
-    logger = config.get_logger('train')
 
     # setup data_loader instances
-    data_loader = config.init_obj('data_loader', module_data)
+    data_loader = config.init_obj('data_loader', module_data, k=k_folder)
     valid_data_loader = data_loader.split_validation()
+    # pdb.set_trace()
 
     # build model architecture, then print to console
     model = config.init_obj('arch', module_arch)
@@ -46,7 +49,8 @@ def main(config):
     # build optimizer, learning rate scheduler. delete every lines containing lr_scheduler for disabling scheduler
     trainable_params = filter(lambda p: p.requires_grad, model.parameters())
     optimizer = config.init_obj('optimizer', torch.optim, trainable_params)
-    lr_scheduler = config.init_obj('lr_scheduler', torch.optim.lr_scheduler, optimizer)
+    # lr_scheduler = config.init_obj('lr_scheduler', torch.optim.lr_scheduler, optimizer)
+    lr_scheduler = config.init_obj('lr_scheduler', module_lr_scheduler, optimizer)
 
     trainer = Trainer(model, criterion, metrics, optimizer,
                       config=config,
@@ -55,8 +59,11 @@ def main(config):
                       valid_data_loader=valid_data_loader,
                       lr_scheduler=lr_scheduler)
 
-    trainer.train()
-    # trainer.over()
+    metrics = trainer.train()
+
+
+    return metrics
+    # # trainer.over()
 
 
 if __name__ == '__main__':
@@ -75,4 +82,18 @@ if __name__ == '__main__':
         CustomArgs(['--bs', '--batch_size'], type=int, target='data_loader;args;batch_size')
     ]
     config = ConfigParser.from_args(args, options)
-    main(config)
+    logger = config.get_logger('train')
+    # k_folders = 5
+    acc = 0
+    loss = 0
+    k_folders = config["data_loader"]["args"]["k_folders"]
+    for k_folder in trange(k_folders):
+        metrics = main(config, logger, k_folder)
+        for key, value in metrics.items():
+            logger.info('    {:15s}: {}'.format(str(key), value))
+        acc += metrics["valid/accuracy"]
+        loss += metrics["valid/loss"]
+    logger.info('    {:15s}: {}'.format("valid/accuracy", acc/k_folders))
+    logger.info('    {:15s}: {}'.format("valid/loss", loss/k_folders))
+
+
