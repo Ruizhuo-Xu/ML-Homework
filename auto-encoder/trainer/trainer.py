@@ -4,6 +4,8 @@ import torch
 from torchvision.utils import make_grid
 from base import BaseTrainer
 from utils import inf_loop, MetricTracker
+import wandb
+from utils import to_img
 
 
 class Trainer(BaseTrainer):
@@ -26,14 +28,17 @@ class Trainer(BaseTrainer):
         :param epoch: Integer, current training epoch.
         :return: A log that contains average loss and metric in this epoch.
         """
-        data, target = batch
-        data, target = data.to(self.device), target.to(self.device)
-        output = self.model(data)
-        loss = self.criterion(output, target)
+        data, _ = batch
+        data = data.to(self.device)
+        _, decode = self.model(data)
+        loss = self.criterion(decode, data)
         self.writer.log("train/loss", loss.item(), on_step=True, on_epoch=True)
+        decode_imgs = make_grid(decode, nrow=8, normalize=True)
+        target_imgs = make_grid(data, nrow=8, normalize=True)
+        self.writer.log_img("train/decode_img", wandb.Image(torch.cat([target_imgs, decode_imgs], dim=-1), caption="Training"))
         if self.metric_ftns:
             for met in self.metric_ftns:
-                self.writer.log(f"train/{met.__name__}", met(output, target))
+                self.writer.log(f"train/{met.__name__}", met(decode, data))
 
         return {
             "loss": loss,
@@ -46,14 +51,17 @@ class Trainer(BaseTrainer):
         :param epoch: Integer, current training epoch.
         :return: A log that contains information about validation
         """
-        data, target = batch
-        data, target = data.to(self.device), target.to(self.device)
-        output = self.model(data)
-        loss = self.criterion(output, target)
+        data, _ = batch
+        data = data.to(self.device)
+        _, decode = self.model(data)
+        loss = self.criterion(decode, data)
         self.writer.log("valid/loss", loss.item())
+        decode_imgs = make_grid(decode, nrow=8, normalize=True)
+        target_imgs = make_grid(data, nrow=8, normalize=True)
+        self.writer.log_img("valid/decode_img", wandb.Image(torch.cat([target_imgs, decode_imgs], dim=-1), caption="Validation"))
         if self.metric_ftns:
             for met in self.metric_ftns:
-                self.writer.log(f"valid/{met.__name__}", met(output, target))
+                self.writer.log(f"valid/{met.__name__}", met(decode, data))
 
         return {
             "loss": loss,
